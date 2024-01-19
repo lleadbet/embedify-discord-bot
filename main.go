@@ -20,14 +20,15 @@ type DomainProps struct {
 var REACTION_EMOJI = "concreteBONK:959613362612887582"
 
 var HANDLED_DOMAINS = map[string]DomainProps{
-	"twitter.com": {
-		Domain:        "vxtwitter.com",
-		RequiredPaths: []*regexp.Regexp{regexp.MustCompile(`\/.*\/status\/`)},
-	},
-	"x.com": {
-		Domain:        "fixvx.com",
-		RequiredPaths: []*regexp.Regexp{regexp.MustCompile(`\/.*\/status\/`)},
-	},
+	// Twitter added embeds, but who knows how long that'll last; leaving this here for now
+	// "twitter.com": {
+	// 	Domain:        "vxtwitter.com",
+	// 	RequiredPaths: []*regexp.Regexp{regexp.MustCompile(`\/.*\/status\/`)},
+	// },
+	// "x.com": {
+	// 	Domain:        "fixvx.com",
+	// 	RequiredPaths: []*regexp.Regexp{regexp.MustCompile(`\/.*\/status\/`)},
+	// },
 	"instagram.com": {
 		Domain:        "ddinstagram.com",
 		RequiredPaths: []*regexp.Regexp{regexp.MustCompile(`\/p\/`)},
