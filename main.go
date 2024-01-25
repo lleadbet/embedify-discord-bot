@@ -81,6 +81,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	matches := urlRegex.FindAllStringSubmatch(m.Content, -1)
 	var content = ""
 	for _, match := range matches {
+		fmt.Printf("Match: %s\n", match[0])
 		url, err := url.Parse(match[0])
 		if err != nil {
 			fmt.Printf("%s\n", err)
