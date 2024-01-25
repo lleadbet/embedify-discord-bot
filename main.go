@@ -86,6 +86,11 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			fmt.Printf("%s\n", err)
 			continue
 		}
+		if len(tldRegex.FindStringSubmatch(url.Hostname())) < 2 {
+			fmt.Printf("No TLD found for %s\n", url.Hostname())
+			fmt.Printf("Regex: %s\n", tldRegex.FindStringSubmatch(url.Hostname()))
+			continue
+		}
 		tld := tldRegex.FindStringSubmatch(url.Hostname())[1]
 		if val, ok := HANDLED_DOMAINS[tld]; ok {
 			for _, path := range val.RequiredPaths {
