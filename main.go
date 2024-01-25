@@ -35,7 +35,7 @@ var HANDLED_DOMAINS = map[string]DomainProps{
 	},
 	"tiktok.com": {
 		Domain:        "vxtiktok.com",
-		RequiredPaths: []*regexp.Regexp{regexp.MustCompile(`\/t\/`)},
+		RequiredPaths: []*regexp.Regexp{regexp.MustCompile(`\/t\/`), regexp.MustCompile(`\/video\/`)},
 	},
 }
 
