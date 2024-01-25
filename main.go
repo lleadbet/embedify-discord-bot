@@ -106,6 +106,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if content == "" {
 		return
 	}
+	fmt.Printf("Sending %s in guild %s in response to user %s\n", content, m.GuildID, m.Author.Username)
 	_, err := s.ChannelMessageSend(m.ChannelID, content)
 	if err != nil {
 		fmt.Printf("%s\n", err)
