@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/signal"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/dgraph-io/ristretto"
 	_ "github.com/joho/godotenv/autoload"
 )
 
@@ -21,7 +23,7 @@ type DomainProps struct {
 
 var REACTION_EMOJI = "concreteBONK:959613362612887582"
 var DEV_MODE = false
-var SUPPRESS_EMBEDS_WITH_TIKTOK = true
+var SUPPRESS_EMBEDS = true
 
 var urlRegex = regexp.MustCompile(`https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-z]{2,4}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)`)
 var tldRegex = regexp.MustCompile(`\.?([^.]*.com)`)
@@ -44,9 +46,19 @@ var HANDLED_DOMAINS = map[string]DomainProps{
 		Domain:        "vxtiktok.com",
 		RequiredPaths: []*regexp.Regexp{regexp.MustCompile(`\/t\/`), regexp.MustCompile(`\/video\/`)},
 	},
+	"reddit.com": {
+		Domain:        "rxddit.com",
+		RequiredPaths: []*regexp.Regexp{regexp.MustCompile(`\/r\/`)},
+	},
+}
+
+type DiscordBotHandler struct {
+	c *ristretto.Cache
+	l *slog.Logger
 }
 
 func main() {
+	level := slog.LevelInfo
 	if os.Getenv("DISCORD_TOKEN") == "" {
 		panic("DISCORD_TOKEN is not set")
 	}
@@ -54,13 +66,19 @@ func main() {
 		REACTION_EMOJI = os.Getenv("REACTION_EMOJI")
 	}
 	if strings.ToUpper(os.Getenv("ENV")) == "DEV" {
-		fmt.Println("Running in dev mode")
 		DEV_MODE = true
+		level = slog.LevelDebug
 	}
+
+	handler, err := NewDiscordHandler(level)
+	if err != nil {
+		panic(err)
+	}
+
 	suppress, _ := strconv.ParseBool(os.Getenv("ENABLE_TIKTOK_EMBED_SUPPRESSION"))
 	if suppress {
-		fmt.Println("Suppressing TikTok embeds")
-		SUPPRESS_EMBEDS_WITH_TIKTOK = suppress
+		handler.l.Info("Suppressing TikTok & Reddit embeds")
+		SUPPRESS_EMBEDS = suppress
 	}
 
 	dgo, err := discordgo.New("Bot " + os.Getenv("DISCORD_TOKEN"))
@@ -68,14 +86,14 @@ func main() {
 		panic(err)
 	}
 
-	dgo.AddHandler(messageCreate)
+	dgo.AddHandler(handler.messageCreate)
 
 	err = dgo.Open()
 	if err != nil {
 		panic(err)
 	}
 
-	println("Bot is running...")
+	handler.l.Info("Bot is now running. Press CTRL-C to exit.")
 	defer dgo.Close()
 
 	// Create a channel to receive the SIGINT signal
@@ -86,16 +104,16 @@ func main() {
 	<-sigint
 }
 
-func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
+func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author.Bot {
 		return
 	}
 
 	if DEV_MODE && m.ChannelID != "1197329348051611690" {
-		fmt.Printf("Ignoring message in channel %s\n", m.ChannelID)
+		d.l.Debug("Ignoring message in channel", "channel", m.ChannelID)
 		return
 	} else if !DEV_MODE && m.ChannelID == "1197329348051611690" {
-		fmt.Printf("Got dev channel message, ignoring\n")
+		d.l.Debug("Got dev channel message, ignoring")
 		return
 	}
 
@@ -104,16 +122,16 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	var shouldStripEmbed = false
 
 	for _, match := range matches {
-		fmt.Printf("Match: %s\n", match[0])
+		d.l.Debug("Match", "match", match[0])
 		url, err := url.Parse(match[0])
 		if err != nil {
-			fmt.Printf("%s\n", err)
+			d.l.Error("Error parsing URL", "error", err)
 			continue
 		}
 
 		if len(tldRegex.FindStringSubmatch(url.Hostname())) < 2 {
-			fmt.Printf("No TLD found for %s\n", url.Hostname())
-			fmt.Printf("Regex: %s\n", tldRegex.FindStringSubmatch(url.Hostname()))
+			d.l.Debug("No TLD found", "hostname", url.Hostname())
+			d.l.Debug("Regex", "regex", tldRegex.FindStringSubmatch(url.Hostname()))
 			continue
 		}
 
@@ -123,7 +141,26 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				if ok := path.MatchString(url.Path); ok {
 					if tld == "tiktok.com" {
 						shouldStripEmbed = true
+					} else if tld == "reddit.com" {
+						val, ok := d.c.Get(match[0])
+						if ok {
+							d.l.Debug("Cache hit", "match", match[0])
+							if !val.(bool) {
+								continue
+							}
+						} else {
+							isVideo, err := d.isRedditVideo(match[0])
+							if err != nil {
+								d.l.Error("Error detecting Reddit video status", "error", err)
+								continue
+							}
+							if !isVideo {
+								continue
+							}
+						}
+						shouldStripEmbed = true
 					}
+
 					url.Host = val.Domain
 					content += fmt.Sprintf("%s\n", url.String())
 					break
@@ -135,20 +172,21 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if content == "" {
 		return
 	}
-	fmt.Printf("Sending %s in guild %s in response to user %s\n", content, m.GuildID, m.Author.Username)
+	d.l.Info("Sending reply", "content", content, "guild", m.GuildID, "author", m.Author.Username)
 	_, err := s.ChannelMessageSend(m.ChannelID, content)
 	if err != nil {
-		fmt.Printf("%s\n", err)
+		d.l.Error("Error sending Discord message", "error", err)
 		return
 	}
 
 	err = s.MessageReactionAdd(m.ChannelID, m.ID, REACTION_EMOJI)
 	if err != nil {
-		fmt.Printf("%s\n", err)
+		d.l.Error("Error adding Discord reaction ", "error", err)
 		return
 	}
 
-	if !shouldStripEmbed {
+	// this technically isn't accurate as the suppress flag also is used for Reddit but it's fine for now
+	if !shouldStripEmbed && SUPPRESS_EMBEDS {
 		return
 	}
 
@@ -156,15 +194,33 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	edit.Flags = discordgo.MessageFlagsSuppressEmbeds
 	_, err = s.ChannelMessageEditComplex(edit)
 	if err != nil {
-		fmt.Printf("%s\n", err)
 		if strings.Contains(err.Error(), "Missing Permissions") {
 			g, err := s.Guild(m.GuildID)
 			if err != nil {
-				fmt.Printf("Error fetching guild information: %s\n", err)
+				d.l.Error("Error fetching guild information", "error", err)
 				return
 			}
-			fmt.Printf("Bot does not have permission to suppress embeds in %s (%s)\n", g.Name, g.ID)
+			d.l.Warn("Bot does not have permission to suppress embeds", "guild", g.Name, "guild_id", g.ID)
 		}
 		return
 	}
+}
+
+func NewDiscordHandler(level slog.Level) (*DiscordBotHandler, error) {
+	h := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	logger := slog.New(h)
+	logger.Debug("Creating new DiscordBotHandler")
+	cache, err := ristretto.NewCache(&ristretto.Config{
+		NumCounters: 1e5,
+		MaxCost:     1e6,
+		BufferItems: 64,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &DiscordBotHandler{
+		c: cache,
+		l: logger,
+	}, nil
 }

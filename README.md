@@ -15,7 +15,7 @@ If you'd like to self-host, simply provide a `DISCORD_TOKEN` in a `.env` file (s
 
 By default, the bot will suppress embeds on any messages that contain TikTok links; this is due to TikTok's terrible embed preview, and without any good way to remove specific embeds, it needs to remove all of them. 
 
-You can disable this by changing the permissions to no longer "Manage Messages" via the installation URL, or if self-hosting, setting the `ENABLE_TIKTOK_EMBED_SUPPRESSION` environment variable to `false`. 
+You can disable this by changing the permissions to no longer "Manage Messages" via the installation URL, or if self-hosting, setting the `SUPPRESS_EMBEDS` environment variable to `false`. 
 
 ## Development
 
