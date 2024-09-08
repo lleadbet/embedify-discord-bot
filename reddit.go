@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -40,9 +41,10 @@ var DEFAULT_HEADERS = http.Header{
 	"Accept-Language": []string{"en-US,en;q=0.5"},
 }
 
-func (d *DiscordBotHandler) isRedditVideo(url string) (bool, error) {
+func (d *DiscordBotHandler) isRedditVideo(url *url.URL) (bool, error) {
+	url.Host = "oauth.reddit.com"
 	client := http.DefaultClient
-	req, err := http.NewRequest("GET", fixURL(url), nil)
+	req, err := http.NewRequest("GET", fixURL(url.String()), nil)
 	if err != nil {
 		return false, err
 	}
@@ -53,7 +55,7 @@ func (d *DiscordBotHandler) isRedditVideo(url string) (bool, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return false, fmt.Errorf("got status code %d", resp.StatusCode)
+		return false, fmt.Errorf("got status code %d; error %v", resp.StatusCode, err)
 	}
 
 	var redditJSON []RedditPost
@@ -62,12 +64,12 @@ func (d *DiscordBotHandler) isRedditVideo(url string) (bool, error) {
 		return false, err
 	}
 
-	d.l.Debug("Reddit URL", "url", url)
+	d.l.Debug("Reddit URL", "url", url.String())
 	for _, post := range redditJSON {
 		for _, child := range post.Data.Children {
 			if child.Data.Media.RedditVideo.FallbackUrl != "" {
 				d.l.Debug("Fallback URL for video", "fallback_url", child.Data.Media.RedditVideo.FallbackUrl)
-				ok := d.c.Set(fixURL(url), true, 1)
+				ok := d.c.Set(fixURL(url.String()), true, 1)
 				if !ok {
 					d.l.Error("Failed to set cache", "url", url)
 					return false, errors.New("failed to set cache")
@@ -96,7 +98,7 @@ func (d *DiscordBotHandler) getVRedditRedirect(id string) (string, error) {
 		return http.ErrUseLastResponse
 	}
 
-	req, err := http.NewRequest("HEAD", fmt.Sprintf("https://www.reddit.com/video/%s", id), nil)
+	req, err := http.NewRequest("HEAD", fmt.Sprintf("https://oauth.reddit.com/video/%s", id), nil)
 	if err != nil {
 		return "", err
 	}

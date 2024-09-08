@@ -14,6 +14,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/dgraph-io/ristretto"
 	_ "github.com/joho/godotenv/autoload"
+	"github.com/lleadbet/go-reddit/v2/reddit"
 )
 
 type DomainProps struct {
@@ -59,6 +60,7 @@ var HANDLED_DOMAINS = map[string]DomainProps{
 type DiscordBotHandler struct {
 	c *ristretto.Cache
 	l *slog.Logger
+	r *reddit.Client
 }
 
 func main() {
@@ -77,15 +79,43 @@ func main() {
 	if strings.ToUpper(os.Getenv("LOG_LEVEL")) == "DEBUG" {
 		level = slog.LevelDebug
 	}
+	h := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	logger := slog.New(h)
 
-	handler, err := NewDiscordHandler(level)
+	username := os.Getenv("REDDIT_USERNAME")
+	if username == "" {
+		username = "USL_Bot"
+	}
+	password := os.Getenv("REDDIT_PASSWORD")
+	if password == "" {
+		logger.Error("Missing Reddit password")
+		panic("Missing Reddit password")
+	}
+	clientId := os.Getenv("REDDIT_CLIENT_ID")
+	if clientId == "" {
+		logger.Error("Missing Reddit client ID")
+		panic("Missing Reddit client ID")
+	}
+	secret := os.Getenv("REDDIT_SECRET")
+	if secret == "" {
+		logger.Error("Missing Reddit secret")
+		panic("Missing Reddit secret")
+	}
+	creds := reddit.Credentials{
+		Username: username,
+		Password: password,
+		Secret:   secret,
+		ID:       clientId,
+	}
+
+	handler, err := NewDiscordHandler(logger, creds)
 	if err != nil {
 		panic(err)
 	}
 
 	suppress, _ := strconv.ParseBool(os.Getenv("ENABLE_TIKTOK_EMBED_SUPPRESSION"))
 	if suppress {
-		handler.l.Info("Suppressing TikTok & Reddit embeds")
+		logger.Info("Suppressing TikTok & Reddit embeds")
 		SUPPRESS_EMBEDS = suppress
 	}
 
@@ -101,7 +131,7 @@ func main() {
 		panic(err)
 	}
 
-	handler.l.Info("Bot is now running. Press CTRL-C to exit.")
+	logger.Info("Bot is now running. Press CTRL-C to exit.")
 	defer dgo.Close()
 
 	// Create a channel to receive the SIGINT signal
@@ -131,23 +161,23 @@ func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.Mes
 
 	for _, match := range matches {
 		d.l.Debug("Match", "match", match[0])
-		url, err := url.Parse(match[0])
+		matchedURL, err := url.Parse(match[0])
 		if err != nil {
 			d.l.Error("Error parsing URL", "error", err)
 			continue
 		}
 
-		if len(tldRegex.FindStringSubmatch(url.Hostname())) < 2 {
-			d.l.Debug("No TLD found", "hostname", url.Hostname())
-			d.l.Debug("Regex", "regex", tldRegex.FindStringSubmatch(url.Hostname()))
+		if len(tldRegex.FindStringSubmatch(matchedURL.Hostname())) < 2 {
+			d.l.Debug("No TLD found", "hostname", matchedURL.Hostname())
+			d.l.Debug("Regex", "regex", tldRegex.FindStringSubmatch(matchedURL.Hostname()))
 			continue
 		}
 
-		tld := tldRegex.FindStringSubmatch(url.Hostname())[1]
+		tld := tldRegex.FindStringSubmatch(matchedURL.Hostname())[1]
 		d.l.Debug("TLD", "tld", tld)
 		if val, ok := HANDLED_DOMAINS[tld]; ok {
 			for _, path := range val.RequiredPaths {
-				if ok := path.MatchString(url.Path); ok {
+				if ok := path.MatchString(matchedURL.Path); ok {
 					if tld == "tiktok.com" {
 						shouldStripEmbed = true
 					} else if tld == "reddit.com" {
@@ -158,7 +188,7 @@ func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.Mes
 								continue
 							}
 						} else {
-							isVideo, err := d.isRedditVideo(match[0])
+							isVideo, err := d.isRedditVideo(matchedURL)
 							if err != nil {
 								d.l.Error("Error detecting Reddit video status", "error", err)
 								continue
@@ -168,9 +198,9 @@ func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.Mes
 							}
 						}
 						shouldStripEmbed = true
-					} else if url.Host == "v.redd.it" {
-						paths := strings.Split(url.Path, "/")
-						d.l.Debug("Paths", "paths", paths, "url", url.Host, "path", url.Path, "len", len(paths))
+					} else if matchedURL.Host == "v.redd.it" {
+						paths := strings.Split(matchedURL.Path, "/")
+						d.l.Debug("Paths", "paths", paths, "url", matchedURL.Host, "path", matchedURL.Path, "len", len(paths))
 						if len(paths) != 2 || paths[1] == "" {
 							continue
 						}
@@ -192,7 +222,7 @@ func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.Mes
 								continue
 							}
 						}
-						url, err = url.Parse(redirect)
+						matchedURL, err = url.Parse(redirect)
 						if err != nil {
 							d.l.Error("Error parsing Reddit video redirect", "error", err)
 							continue
@@ -200,8 +230,8 @@ func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.Mes
 						shouldStripEmbed = true
 					}
 
-					url.Host = val.Domain
-					content += fmt.Sprintf("%s\n", url.String())
+					matchedURL.Host = val.Domain
+					content += fmt.Sprintf("%s\n", matchedURL.String())
 					break
 				}
 			}
@@ -245,9 +275,7 @@ func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.Mes
 	}
 }
 
-func NewDiscordHandler(level slog.Level) (*DiscordBotHandler, error) {
-	h := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
-	logger := slog.New(h)
+func NewDiscordHandler(logger *slog.Logger, creds reddit.Credentials) (*DiscordBotHandler, error) {
 	logger.Debug("Creating new DiscordBotHandler")
 	cache, err := ristretto.NewCache(&ristretto.Config{
 		NumCounters: 1e5,
@@ -258,8 +286,14 @@ func NewDiscordHandler(level slog.Level) (*DiscordBotHandler, error) {
 		return nil, err
 	}
 
+	reddit, err := reddit.NewClient(creds)
+	if err != nil {
+		return nil, err
+	}
+
 	return &DiscordBotHandler{
 		c: cache,
 		l: logger,
+		r: reddit,
 	}, nil
 }
