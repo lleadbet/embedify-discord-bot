@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"golang.org/x/oauth2"
 )
 
 type RedditPost struct {
@@ -36,20 +39,23 @@ type RedditPostChildDataMediaRedditVideo struct {
 	FallbackUrl string `json:"fallback_url"`
 }
 
-var DEFAULT_HEADERS = http.Header{
-	"User-Agent":      []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/116.0"},
-	"Accept-Language": []string{"en-US,en;q=0.5"},
+type oauthTokenSource struct {
+	ctx                context.Context
+	config             *oauth2.Config
+	username, password string
+}
+
+func (s *oauthTokenSource) Token() (*oauth2.Token, error) {
+	return s.config.PasswordCredentialsToken(s.ctx, s.username, s.password)
 }
 
 func (d *DiscordBotHandler) isRedditVideo(url *url.URL) (bool, error) {
-	url.Host = "oauth.reddit.com"
-	client := http.DefaultClient
 	req, err := http.NewRequest("GET", fixURL(url.String()), nil)
 	if err != nil {
 		return false, err
 	}
-	req.Header = DEFAULT_HEADERS
-	resp, err := client.Do(req)
+
+	resp, err := d.h.Do(req)
 	if err != nil {
 		return false, err
 	}
@@ -92,25 +98,30 @@ func fixURL(url string) string {
 }
 
 func (d *DiscordBotHandler) getVRedditRedirect(id string) (string, error) {
-	client := http.DefaultClient
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		d.l.Debug("Redirect", "req", req, "via", via, "status", req.Response.StatusCode, "headers", req.Response.Header)
+	d.h.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		d.l.Debug("Redirect", "req", req, "via", via, "status", req.Response.StatusCode, "headers", req.Response.Header, "req headers", req.Header)
 		return http.ErrUseLastResponse
 	}
 
-	req, err := http.NewRequest("HEAD", fmt.Sprintf("https://oauth.reddit.com/video/%s", id), nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header = DEFAULT_HEADERS
-
-	resp, err := client.Do(req)
+	d.getRedditToken()
+	req, err := http.NewRequest("HEAD", fmt.Sprintf("https://www.reddit.com/video/%s", id), nil)
 	if err != nil {
 		return "", err
 	}
 
-	d.l.Debug("Redirect URL", "url", resp.Header.Get("Location"))
+	resp, err := d.h.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	d.l.Debug("Redirect URL", "url", resp.Header.Get("Location"), "status", resp.StatusCode, "headers", resp, "body", resp.Body)
 
 	d.c.Set(id, resp.Header.Get("Location"), 1)
 	return resp.Header.Get("Location"), nil
+}
+
+func (d *DiscordBotHandler) getRedditToken() string {
+	d.l.Debug("Getting Reddit token", "token_url", d.r.TokenURL.String())
+	return ""
 }

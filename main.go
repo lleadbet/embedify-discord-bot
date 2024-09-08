@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -10,11 +12,13 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/dgraph-io/ristretto"
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/lleadbet/go-reddit/v2/reddit"
+	"golang.org/x/oauth2"
 )
 
 type DomainProps struct {
@@ -61,6 +65,7 @@ type DiscordBotHandler struct {
 	c *ristretto.Cache
 	l *slog.Logger
 	r *reddit.Client
+	h *http.Client
 }
 
 func main() {
@@ -291,9 +296,30 @@ func NewDiscordHandler(logger *slog.Logger, creds reddit.Credentials) (*DiscordB
 		return nil, err
 	}
 
+	rc, cancel := context.WithTimeout(context.Background(), (5*60)*time.Second)
+	defer cancel()
+
+	config := &oauth2.Config{
+		ClientID:     reddit.ID,
+		ClientSecret: reddit.Secret,
+		Endpoint: oauth2.Endpoint{
+			TokenURL:  reddit.TokenURL.String(),
+			AuthStyle: oauth2.AuthStyleInHeader,
+		},
+	}
+
+	tokenSource := oauth2.ReuseTokenSource(nil, &oauthTokenSource{
+		ctx:      rc,
+		config:   config,
+		username: reddit.Username,
+		password: reddit.Password,
+	})
+
+	client := oauth2.NewClient(rc, tokenSource)
 	return &DiscordBotHandler{
 		c: cache,
 		l: logger,
 		r: reddit,
+		h: client,
 	}, nil
 }
