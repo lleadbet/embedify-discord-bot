@@ -26,7 +26,7 @@ var DEV_MODE = false
 var SUPPRESS_EMBEDS = true
 
 var urlRegex = regexp.MustCompile(`https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-z]{2,4}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)`)
-var tldRegex = regexp.MustCompile(`\.?([^.]*.com)`)
+var tldRegex = regexp.MustCompile(`\.?([^.]*(.com|.it))`)
 
 var HANDLED_DOMAINS = map[string]DomainProps{
 	// Twitter added embeds, but who knows how long that'll last; leaving this here for now
@@ -49,6 +49,10 @@ var HANDLED_DOMAINS = map[string]DomainProps{
 	"reddit.com": {
 		Domain:        "rxddit.com",
 		RequiredPaths: []*regexp.Regexp{regexp.MustCompile(`\/r\/`)},
+	},
+	"redd.it": {
+		Domain:        "rxddit.com",
+		RequiredPaths: []*regexp.Regexp{regexp.MustCompile(`.*`)},
 	},
 }
 
@@ -136,6 +140,7 @@ func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.Mes
 		}
 
 		tld := tldRegex.FindStringSubmatch(url.Hostname())[1]
+		d.l.Debug("TLD", "tld", tld)
 		if val, ok := HANDLED_DOMAINS[tld]; ok {
 			for _, path := range val.RequiredPaths {
 				if ok := path.MatchString(url.Path); ok {
@@ -157,6 +162,36 @@ func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.Mes
 							if !isVideo {
 								continue
 							}
+						}
+						shouldStripEmbed = true
+					} else if url.Host == "v.redd.it" {
+						paths := strings.Split(url.Path, "/")
+						d.l.Debug("Paths", "paths", paths, "url", url.Host, "path", url.Path, "len", len(paths))
+						if len(paths) != 2 || paths[1] == "" {
+							continue
+						}
+
+						var redirect = ""
+						// check cache to avoid unnecessary requests
+						val, ok := d.c.Get(paths[1])
+						d.l.Debug("Cache get", "id", paths[1], "val", val, "ok", ok)
+						if ok {
+							d.l.Debug("Cache hit", "id", paths[1])
+							if val == "" {
+								continue
+							}
+							redirect = val.(string)
+						} else {
+							redirect, err = d.getVRedditRedirect(paths[1])
+							if err != nil || redirect == "" {
+								d.l.Error("Error fetching Reddit video redirect", "error", err)
+								continue
+							}
+						}
+						url, err = url.Parse(redirect)
+						if err != nil {
+							d.l.Error("Error parsing Reddit video redirect", "error", err)
+							continue
 						}
 						shouldStripEmbed = true
 					}

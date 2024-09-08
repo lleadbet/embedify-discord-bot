@@ -35,13 +35,15 @@ type RedditPostChildDataMediaRedditVideo struct {
 	FallbackUrl string `json:"fallback_url"`
 }
 
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/116.0"
+
 func (d *DiscordBotHandler) isRedditVideo(url string) (bool, error) {
 	client := http.DefaultClient
 	req, err := http.NewRequest("GET", fixURL(url), nil)
 	if err != nil {
 		return false, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/116.0")
+	req.Header.Set("User-Agent", USER_AGENT)
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, err
@@ -82,4 +84,28 @@ func fixURL(url string) string {
 		return url[:len(url)-2]
 	}
 	return fmt.Sprintf("%s.json", url)
+}
+
+func (d *DiscordBotHandler) getVRedditRedirect(id string) (string, error) {
+	client := http.DefaultClient
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		d.l.Debug("Redirect", "req", req, "via", via, "status", req.Response.StatusCode, "headers", req.Response.Header)
+		return http.ErrUseLastResponse
+	}
+
+	req, err := http.NewRequest("HEAD", fmt.Sprintf("https://www.reddit.com/video/%s", id), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", USER_AGENT)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+
+	d.l.Debug("Redirect URL", "url", resp.Header.Get("Location"))
+
+	d.c.Set(id, resp.Header.Get("Location"), 1)
+	return resp.Header.Get("Location"), nil
 }
