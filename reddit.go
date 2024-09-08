@@ -35,7 +35,10 @@ type RedditPostChildDataMediaRedditVideo struct {
 	FallbackUrl string `json:"fallback_url"`
 }
 
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/116.0"
+var DEFAULT_HEADERS = http.Header{
+	"User-Agent":      []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/116.0"},
+	"Accept-Language": []string{"en-US,en;q=0.5"},
+}
 
 func (d *DiscordBotHandler) isRedditVideo(url string) (bool, error) {
 	client := http.DefaultClient
@@ -43,7 +46,7 @@ func (d *DiscordBotHandler) isRedditVideo(url string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	req.Header.Set("User-Agent", USER_AGENT)
+	req.Header = DEFAULT_HEADERS
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, err
@@ -97,7 +100,7 @@ func (d *DiscordBotHandler) getVRedditRedirect(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", USER_AGENT)
+	req.Header = DEFAULT_HEADERS
 
 	resp, err := client.Do(req)
 	if err != nil {
