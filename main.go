@@ -74,6 +74,10 @@ func main() {
 		level = slog.LevelDebug
 	}
 
+	if strings.ToUpper(os.Getenv("LOG_LEVEL")) == "DEBUG" {
+		level = slog.LevelDebug
+	}
+
 	handler, err := NewDiscordHandler(level)
 	if err != nil {
 		panic(err)
@@ -184,7 +188,7 @@ func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.Mes
 						} else {
 							redirect, err = d.getVRedditRedirect(paths[1])
 							if err != nil || redirect == "" {
-								d.l.Error("Error fetching Reddit video redirect", "error", err)
+								d.l.Error("Error fetching Reddit video redirect", "error", err, "redirect", redirect)
 								continue
 							}
 						}

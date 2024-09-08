@@ -12,6 +12,7 @@ primary_region = "iad"
 
 [env]
   PORT = "8080"
+  LOG_LEVEL = "debug"
 
 [[vm]]
   cpu_kind = "shared"
