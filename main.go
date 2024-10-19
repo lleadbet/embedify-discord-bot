@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,13 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/dgraph-io/ristretto"
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/lleadbet/go-reddit/v2/reddit"
-	"golang.org/x/oauth2"
 )
 
 type DomainProps struct {
@@ -183,10 +180,12 @@ func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.Mes
 		if val, ok := HANDLED_DOMAINS[tld]; ok {
 			for _, path := range val.RequiredPaths {
 				if ok := path.MatchString(matchedURL.Path); ok {
+					isReddit := false
 					if tld == "tiktok.com" {
 						shouldStripEmbed = true
 					} else if tld == "reddit.com" {
-						val, ok := d.c.Get(match[0])
+						isReddit = true
+						val, ok := d.c.Get(matchedURL.String())
 						if ok {
 							d.l.Debug("Cache hit", "match", match[0])
 							if !val.(bool) {
@@ -204,24 +203,19 @@ func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.Mes
 						}
 						shouldStripEmbed = true
 					} else if matchedURL.Host == "v.redd.it" {
-						paths := strings.Split(matchedURL.Path, "/")
-						d.l.Debug("Paths", "paths", paths, "url", matchedURL.Host, "path", matchedURL.Path, "len", len(paths))
-						if len(paths) != 2 || paths[1] == "" {
-							continue
-						}
-
+						isReddit = true
 						var redirect = ""
 						// check cache to avoid unnecessary requests
-						val, ok := d.c.Get(paths[1])
-						d.l.Debug("Cache get", "id", paths[1], "val", val, "ok", ok)
+						val, ok := d.c.Get(matchedURL.String())
+						d.l.Debug("Cache get", "id", matchedURL.String(), "val", val, "ok", ok)
 						if ok {
-							d.l.Debug("Cache hit", "id", paths[1])
+							d.l.Debug("Cache hit", "id", matchedURL.String())
 							if val == "" {
 								continue
 							}
 							redirect = val.(string)
 						} else {
-							redirect, err = d.getVRedditRedirect(paths[1])
+							redirect, err = d.getVRedditRedirect(matchedURL.String())
 							if err != nil || redirect == "" {
 								d.l.Error("Error fetching Reddit video redirect", "error", err, "redirect", redirect)
 								continue
@@ -236,7 +230,11 @@ func (d *DiscordBotHandler) messageCreate(s *discordgo.Session, m *discordgo.Mes
 					}
 
 					matchedURL.Host = val.Domain
-					content += fmt.Sprintf("%s\n", matchedURL.String())
+					warning := ""
+					if isReddit {
+						warning = ":warning: Reddit embeds do not have audio :warning:\n"
+					}
+					content += fmt.Sprintf("%s%s\n", warning, matchedURL.String())
 					break
 				}
 			}
@@ -296,30 +294,10 @@ func NewDiscordHandler(logger *slog.Logger, creds reddit.Credentials) (*DiscordB
 		return nil, err
 	}
 
-	rc, cancel := context.WithTimeout(context.Background(), (5*60)*time.Second)
-	defer cancel()
-
-	config := &oauth2.Config{
-		ClientID:     reddit.ID,
-		ClientSecret: reddit.Secret,
-		Endpoint: oauth2.Endpoint{
-			TokenURL:  reddit.TokenURL.String(),
-			AuthStyle: oauth2.AuthStyleInHeader,
-		},
-	}
-
-	tokenSource := oauth2.ReuseTokenSource(nil, &oauthTokenSource{
-		ctx:      rc,
-		config:   config,
-		username: reddit.Username,
-		password: reddit.Password,
-	})
-
-	client := oauth2.NewClient(rc, tokenSource)
 	return &DiscordBotHandler{
 		c: cache,
 		l: logger,
 		r: reddit,
-		h: client,
+		h: http.DefaultClient,
 	}, nil
 }

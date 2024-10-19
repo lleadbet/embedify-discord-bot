@@ -1,15 +1,13 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
-
-	"golang.org/x/oauth2"
 )
 
 type RedditPost struct {
@@ -27,8 +25,10 @@ type RedditPostChild struct {
 }
 
 type RedditPostChildData struct {
-	Title string                   `json:"title"`
-	Media RedditPostChildDataMedia `json:"media"`
+	Title               string                   `json:"title"`
+	Media               RedditPostChildDataMedia `json:"media"`
+	Permalink           string                   `json:"permalink"`
+	CrosspostParentList []RedditPostChildData    `json:"crosspost_parent_list"`
 }
 
 type RedditPostChildDataMedia struct {
@@ -37,16 +37,6 @@ type RedditPostChildDataMedia struct {
 
 type RedditPostChildDataMediaRedditVideo struct {
 	FallbackUrl string `json:"fallback_url"`
-}
-
-type oauthTokenSource struct {
-	ctx                context.Context
-	config             *oauth2.Config
-	username, password string
-}
-
-func (s *oauthTokenSource) Token() (*oauth2.Token, error) {
-	return s.config.PasswordCredentialsToken(s.ctx, s.username, s.password)
 }
 
 func (d *DiscordBotHandler) isRedditVideo(url *url.URL) (bool, error) {
@@ -60,22 +50,24 @@ func (d *DiscordBotHandler) isRedditVideo(url *url.URL) (bool, error) {
 		return false, err
 	}
 	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return false, fmt.Errorf("got status code %d; error %v", resp.StatusCode, err)
+		return false, fmt.Errorf("got status code %d; error %v; body %v", resp.StatusCode, err, string(respBody[:]))
 	}
-
 	var redditJSON []RedditPost
-	err = json.NewDecoder(resp.Body).Decode(&redditJSON)
+	err = json.Unmarshal(respBody, &redditJSON)
 	if err != nil {
+		d.l.Error("Error decoding Reddit JSON", "error", err)
 		return false, err
 	}
 
 	d.l.Debug("Reddit URL", "url", url.String())
 	for _, post := range redditJSON {
+		d.l.Debug("Reddit Post", "post", post)
 		for _, child := range post.Data.Children {
 			if child.Data.Media.RedditVideo.FallbackUrl != "" {
 				d.l.Debug("Fallback URL for video", "fallback_url", child.Data.Media.RedditVideo.FallbackUrl)
-				ok := d.c.Set(fixURL(url.String()), true, 1)
+				ok := d.c.Set(url.String(), true, 1)
 				if !ok {
 					d.l.Error("Failed to set cache", "url", url)
 					return false, errors.New("failed to set cache")
@@ -97,14 +89,19 @@ func fixURL(url string) string {
 	return fmt.Sprintf("%s.json", url)
 }
 
-func (d *DiscordBotHandler) getVRedditRedirect(id string) (string, error) {
-	d.h.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		d.l.Debug("Redirect", "req", req, "via", via, "status", req.Response.StatusCode, "headers", req.Response.Header, "req headers", req.Header)
-		return http.ErrUseLastResponse
+func (d *DiscordBotHandler) getVRedditRedirect(videoURL string) (string, error) {
+	requestURL, err := url.Parse("https://www.reddit.com/search/.json")
+	if err != nil {
+		return "", err
 	}
 
-	d.getRedditToken()
-	req, err := http.NewRequest("HEAD", fmt.Sprintf("https://www.reddit.com/video/%s", id), nil)
+	params := requestURL.Query()
+
+	params.Add("q", videoURL)
+	params.Add("limit", "1")
+	requestURL.RawQuery = params.Encode()
+
+	req, err := http.NewRequest("GET", requestURL.String(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -114,14 +111,43 @@ func (d *DiscordBotHandler) getVRedditRedirect(id string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+	d.l.Debug("Reddit URL", "url", videoURL, "resp", resp.Body)
 
-	d.l.Debug("Redirect URL", "url", resp.Header.Get("Location"), "status", resp.StatusCode, "headers", resp, "body", resp.Body)
+	var redditJSON RedditPost
+	err = json.NewDecoder(resp.Body).Decode(&redditJSON)
+	if err != nil {
+		return "", err
+	}
 
-	d.c.Set(id, resp.Header.Get("Location"), 1)
-	return resp.Header.Get("Location"), nil
-}
+	if redditJSON.Kind == "" {
+		d.l.Debug("Reddit JSON Kind is empty", "json", redditJSON)
+		return "", nil
+	}
 
-func (d *DiscordBotHandler) getRedditToken() string {
-	d.l.Debug("Getting Reddit token", "token_url", d.r.TokenURL.String())
-	return ""
+	for _, child := range redditJSON.Data.Children {
+		if len(child.Data.CrosspostParentList) > 0 {
+			if child.Data.CrosspostParentList[0].Permalink != "" {
+				fixedURL := fmt.Sprintf("https://www.rxddit.com%s", child.Data.CrosspostParentList[0].Permalink)
+				d.l.Debug("Fallback URL for video", "permalink", fixedURL)
+				ok := d.c.Set(videoURL, fixedURL, 1)
+				if !ok {
+					d.l.Error("Failed to set cache", "url", videoURL)
+					return "", errors.New("failed to set cache")
+				}
+				return fixedURL, nil
+			}
+		}
+		if child.Data.Permalink != "" {
+			fixedURL := fmt.Sprintf("https://www.rxddit.com%s", child.Data.Permalink)
+			d.l.Debug("Fallback URL for video", "permalink", fixedURL)
+			ok := d.c.Set(videoURL, fixedURL, 1)
+			if !ok {
+				d.l.Error("Failed to set cache", "url", videoURL)
+				return "", errors.New("failed to set cache")
+			}
+			return fixedURL, nil
+		}
+	}
+
+	return "", nil
 }
